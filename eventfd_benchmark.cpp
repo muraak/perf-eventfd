@@ -7,8 +7,60 @@
 #include <cstring>
 #include <vector>
 #include <algorithm>
+#include <sys/mman.h>
+#include <sched.h>
+#include <sched.h>
+#include <sys/resource.h>
 
-int main() {
+
+int set_realtime(int prio) {
+    struct sched_param sp;
+    sp.sched_priority = prio;
+    if (sched_setscheduler(0, SCHED_FIFO, &sp) < 0) {
+        perror("sched_setscheduler");
+        return -1;
+    }
+    return 0;
+}
+
+
+int set_cpu(int core) {
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    CPU_SET(core, &set);
+    if (sched_setaffinity(0, sizeof(set), &set) < 0) {
+        perror("sched_setaffinity");
+        return -1;
+    }
+    return 0;
+}
+
+int main(int argc, char* argv[]) {
+    int use_realtime = 0;
+    int rt_prio = 0;
+    int use_cpu = 0;
+    int parent_core = -1, child_core = -1;
+    int use_mlock = 0;
+    for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) == "--realtime" && i+1 < argc) {
+            use_realtime = 1;
+            rt_prio = std::stoi(argv[++i]);
+        } else if (std::string(argv[i]) == "--cpu" && i+2 < argc) {
+            use_cpu = 1;
+            parent_core = std::stoi(argv[++i]);
+            child_core = std::stoi(argv[++i]);
+        } else if (std::string(argv[i]) == "--mlock") {
+            use_mlock = 1;
+        }
+    }
+
+    if (use_mlock) {
+        if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0) {
+            perror("mlockall");
+            std::cerr << "メモリロックに失敗しました" << std::endl;
+        }
+    }
+
     int efd1 = eventfd(0, EFD_NONBLOCK);
     int efd2 = eventfd(0, EFD_NONBLOCK);
     if (efd1 == -1 || efd2 == -1) {
@@ -23,6 +75,16 @@ int main() {
     }
 
     if (pid == 0) { // Child process
+        if (use_cpu && child_core >= 0) {
+            if (set_cpu(child_core) < 0) {
+                std::cerr << "[child] CPU割り当て失敗\n";
+            }
+        }
+        if (use_realtime) {
+            if (set_realtime(rt_prio) < 0) {
+                std::cerr << "[child] リアルタイム優先度設定失敗\n";
+            }
+        }
         int epfd = epoll_create1(0);
         if (epfd == -1) {
             perror("epoll_create1");
@@ -47,6 +109,16 @@ int main() {
             }
         }
     } else { // Parent process
+        if (use_cpu && parent_core >= 0) {
+            if (set_cpu(parent_core) < 0) {
+                std::cerr << "[parent] CPU割り当て失敗\n";
+            }
+        }
+        if (use_realtime) {
+            if (set_realtime(rt_prio) < 0) {
+                std::cerr << "[parent] リアルタイム優先度設定失敗\n";
+            }
+        }
         int epfd = epoll_create1(0);
         if (epfd == -1) {
             perror("epoll_create1");
@@ -89,9 +161,7 @@ int main() {
         std::cout << "最大応答時間: " << max_us << " us" << std::endl;
         kill(pid, SIGKILL);
         waitpid(pid, nullptr, 0);
-#include <cstring>
-#include <vector>
-#include <algorithm>
+
     }
     return 0;
 }
